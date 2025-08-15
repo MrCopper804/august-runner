@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>14 August Runner</title>
+  <style>
+    /* Minimal CSS, dark + neon green vibes */
+    html, body { height:100%; margin:0; background:#060a07; color:#eaffef; font-family: system-ui, Arial, sans-serif; }
+    .wrap { display:flex; flex-direction:column; align-items:center; gap:10px; padding:10px; }
+    .title { margin-top:6px; font-weight:800; letter-spacing:0.5px; text-align:center; }
+    .title span { color:#00ff88; text-shadow:0 0 10px #00ff88, 0 0 20px #00ff88; }
+    .hud { display:flex; gap:16px; align-items:center; font-size:14px; padding:8px 12px; border:1px solid rgba(0,255,136,0.3); border-radius:14px; box-shadow:0 0 12px rgba(0,255,136,0.15) inset; background:rgba(0,0,0,0.35); backdrop-filter: blur(4px); }
+    .btn { cursor:pointer; padding:10px 14px; border-radius:14px; border:1px solid rgba(0,255,136,0.5); background:linear-gradient(180deg,#09140e,#0e1f17); color:#eaffef; box-shadow:0 0 12px rgba(0,255,136,0.25); font-weight:700; }
+    .btn:active { transform:scale(0.98); }
+    canvas { border-radius:18px; border:1px solid rgba(0,255,136,0.4); box-shadow:0 0 18px rgba(0,255,136,0.35), 0 0 50px rgba(0,255,136,0.15) inset; background: radial-gradient(1200px 700px at 50% 0%, rgba(0,255,136,0.08), transparent), linear-gradient(180deg,#07110d,#050806); touch-action: manipulation; }
+    .hint { font-size:12px; color:#b7ffda; opacity:0.9; text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">14 <span>August</span> Runner — 🇵🇰</div>
+    <div class="hud">
+      <div>Score: <b id="score">0</b></div>
+      <div>Best: <b id="best">0</b></div>
+      <div>Level: <b id="level">1</b></div>
+      <button id="startBtn" class="btn">Start / Restart</button>
+    </div>
+    <canvas id="game" width="920" height="420"></canvas>
+    <div class="hint">PC: Press <b>Space/↑/W</b> to jump • Mobile: <b>Tap</b> anywhere.<br/>Every <b>7 score</b> the game speeds up automatically.</div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const c = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const levelEl = document.getElementById('level');
+  const startBtn = document.getElementById('startBtn');
+
+  // Responsive canvas (keeps aspect)
+  function fitCanvas() {
+    const maxW = Math.min(window.innerWidth - 20, 920);
+    const scale = maxW / canvas.width;
+    canvas.style.width = maxW + 'px';
+    canvas.style.height = (canvas.height * scale) + 'px';
+  }
+  window.addEventListener('resize', fitCanvas);
+  fitCanvas();
+
+  // Game constants
+  const GROUND_Y = canvas.height - 60; // ground baseline
+  const GRAVITY = 0.7;
+  const JUMP_VELOCITY = -13.5;
+
+  // State
+  let running = false;
+  let score = 0;
+  let best = Number(localStorage.getItem('pk14_best') || 0);
+  let level = 1;
+  let speed = 6;            // obstacle base speed
+  let spawnInterval = 1200; // ms
+  let lastSpawn = 0;
+  let lastTime = 0;
+
+  bestEl.textContent = best;
+
+  const player = {
+    x: 120,
+    y: GROUND_Y,
+    r: 18,
+    vy: 0,
+    grounded: true,
+  };
+
+  /** Simple obstacle structure */
+  const obstacles = [];
+
+  function resetGame() {
+    running = true;
+    score = 0; level = 1; speed = 6; spawnInterval = 1200;
+    player.y = GROUND_Y; player.vy = 0; player.grounded = true;
+    obstacles.length = 0; lastSpawn = 0; lastTime = 0;
+    scoreEl.textContent = score; levelEl.textContent = level;
+  }
+
+  function jump() {
+    if (!running) return;
+    if (player.grounded) {
+      player.vy = JUMP_VELOCITY;
+      player.grounded = false;
+    }
+  }
+
+  // Controls
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.key.toLowerCase() === 'w') {
+      e.preventDefault();
+      jump();
+    }
+  }, { passive:false });
+  canvas.addEventListener('pointerdown', jump);
+  startBtn.addEventListener('click', resetGame);
+
+  // Difficulty: every 7 score → +level, increase speed and spawn faster
+  function handleDifficulty() {
+    const newLevel = Math.floor(score / 7) + 1;
+    if (newLevel !== level) {
+      level = newLevel;
+      // Increase speed with a gentle ramp, and shorten spawn interval but keep a floor
+      speed = 6 + (level - 1) * 0.9; // linear-ish ramp
+      spawnInterval = Math.max(450, 1200 - (level - 1) * 70);
+      levelEl.textContent = level;
+    }
+  }
+
+  function spawnObstacle(now) {
+    obstacles.push({
+      x: canvas.width + 40,
+      y: GROUND_Y - 24,
+      w: 34 + Math.random() * 12,
+      h: 24 + Math.random() * 6,
+      passed: false,
+    });
+    lastSpawn = now;
+  }
+
+  function update(dt, now) {
+    // Player physics
+    player.vy += GRAVITY;
+    player.y += player.vy;
+    if (player.y >= GROUND_Y) {
+      player.y = GROUND_Y;
+      player.vy = 0;
+      player.grounded = true;
+    }
+
+    // Obstacles
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const o = obstacles[i];
+      o.x -= speed;
+      // Score when passed
+      if (!o.passed && o.x + o.w < player.x - player.r) {
+        o.passed = true;
+        score++;
+        scoreEl.textContent = score;
+        handleDifficulty();
+      }
+      // Remove off screen
+      if (o.x + o.w < -50) obstacles.splice(i,1);
+    }
+
+    // Spawn logic
+    if (now - lastSpawn >= spawnInterval) spawnObstacle(now);
+
+    // Collisions (circle vs. rect)
+    for (const o of obstacles) {
+      const nearestX = Math.max(o.x, Math.min(player.x, o.x + o.w));
+      const nearestY = Math.max(o.y, Math.min(player.y, o.y + o.h));
+      const dx = player.x - nearestX;
+      const dy = player.y - nearestY;
+      if (dx*dx + dy*dy <= player.r * player.r) {
+        gameOver();
+        break;
+      }
+    }
+  }
+
+  function drawBackground(t) {
+    // Subtle moving stars + ground line + Independence sparkles
+    c.clearRect(0,0,canvas.width,canvas.height);
+
+    // Stars
+    const starCount = 80;
+    for (let i=0;i<starCount;i++) {
+      const x = (i * 1234.567 + (t*0.02)) % canvas.width;
+      const y = (i * 89.42) % (canvas.height - 80);
+      c.globalAlpha = 0.3 + (i % 3) * 0.2;
+      c.fillStyle = '#b7ffda';
+      c.fillRect(x, y, 2, 2);
+    }
+    c.globalAlpha = 1;
+
+    // Ground
+    c.strokeStyle = 'rgba(0,255,136,0.6)';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(0, GROUND_Y + player.r + 10);
+    c.lineTo(canvas.width, GROUND_Y + player.r + 10);
+    c.stroke();
+
+    // Slogan
+    c.font = 'bold 16px system-ui, Arial';
+    c.fillStyle = 'rgba(183,255,218,0.9)';
+    c.fillText('14 August • Azadi Mubarak!', 16, 28);
+  }
+
+  function drawPlayer() {
+    // Player: glowing white circle with green crescent & star
+    // Glow
+    c.shadowColor = '#00ff88';
+    c.shadowBlur = 12;
+    c.beginPath();
+    c.fillStyle = '#ffffff';
+    c.arc(player.x, player.y, player.r, 0, Math.PI*2);
+    c.fill();
+
+    // Crescent (two circles trick)
+    c.shadowBlur = 0;
+    const cr = player.r * 0.6;
+    c.fillStyle = '#00a65a'; // Pakistani green
+    c.beginPath();
+    c.arc(player.x, player.y, cr, 0, Math.PI*2);
+    c.fill();
+    c.globalCompositeOperation = 'destination-out';
+    c.beginPath();
+    c.arc(player.x + cr*0.35, player.y, cr*0.75, 0, Math.PI*2);
+    c.fill();
+    c.globalCompositeOperation = 'source-over';
+
+    // Star (simple 5-point)
+    drawStar(player.x + cr*0.9, player.y - cr*0.3, cr*0.35, 5);
+  }
+
+  function drawStar(cx, cy, outerR, spikes) {
+    c.fillStyle = '#ffffff';
+    c.beginPath();
+    let rot = Math.PI / 2 * 3;
+    let x = cx, y = cy;
+    const step = Math.PI / spikes;
+    c.moveTo(cx, cy - outerR);
+    for (let i = 0; i < spikes; i++) {
+      x = cx + Math.cos(rot) * outerR;
+      y = cy + Math.sin(rot) * outerR;
+      c.lineTo(x, y);
+      rot += step;
+      x = cx + Math.cos(rot) * (outerR * 0.5);
+      y = cy + Math.sin(rot) * (outerR * 0.5);
+      c.lineTo(x, y);
+      rot += step;
+    }
+    c.lineTo(cx, cy - outerR);
+    c.closePath();
+    c.fill();
+  }
+
+  function drawObstacles() {
+    for (const o of obstacles) {
+      // Neon boxes (as hurdles)
+      c.fillStyle = '#0c1e17';
+      c.fillRect(o.x, o.y, o.w, o.h);
+      c.strokeStyle = 'rgba(0,255,136,0.8)';
+      c.lineWidth = 2;
+      c.strokeRect(o.x, o.y, o.w, o.h);
+    }
+  }
+
+  function drawGameOver() {
+    c.fillStyle = 'rgba(0,0,0,0.6)';
+    c.fillRect(0,0,canvas.width,canvas.height);
+    c.textAlign = 'center';
+    c.fillStyle = '#eaffef';
+    c.font = 'bold 28px system-ui, Arial';
+    c.fillText('Game Over', canvas.width/2, canvas.height/2 - 20);
+    c.font = '16px system-ui, Arial';
+    c.fillText('Score: ' + score + '  •  Best: ' + best, canvas.width/2, canvas.height/2 + 10);
+    c.fillText('Press Start to try again', canvas.width/2, canvas.height/2 + 40);
+    c.textAlign = 'left';
+  }
+
+  function gameOver() {
+    running = false;
+    if (score > best) {
+      best = score;
+      localStorage.setItem('pk14_best', String(best));
+      bestEl.textContent = best;
+    }
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    if (!running) {
+      drawBackground(now/16);
+      drawObstacles();
+      drawPlayer();
+      drawGameOver();
+      return;
+    }
+
+    if (!lastTime) lastTime = now;
+    const dt = Math.min(32, now - lastTime);
+    lastTime = now;
+
+    update(dt, now);
+    drawBackground(now/16);
+    drawObstacles();
+    drawPlayer();
+  }
+
+  // Initialize with idle screen
+  drawBackground(0);
+  drawPlayer();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
