@@ -5,41 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>14 August Runner</title>
   <style>
-    /* Minimal CSS, dark + neon green vibes */
     html, body { height:100%; margin:0; background:#060a07; color:#eaffef; font-family: system-ui, Arial, sans-serif; }
     .wrap { display:flex; flex-direction:column; align-items:center; gap:10px; padding:10px; }
-    .title { margin-top:6px; font-weight:800; letter-spacing:0.5px; text-align:center; }
+    .title { margin-top:6px; font-weight:800; letter-spacing:0.5px; text-align:center; user-select:none; }
     .title span { color:#00ff88; text-shadow:0 0 10px #00ff88, 0 0 20px #00ff88; }
-    .hud { display:flex; gap:16px; align-items:center; font-size:14px; padding:8px 12px; border:1px solid rgba(0,255,136,0.3); border-radius:14px; box-shadow:0 0 12px rgba(0,255,136,0.15) inset; background:rgba(0,0,0,0.35); backdrop-filter: blur(4px); }
+    .hud { display:flex; gap:16px; align-items:center; font-size:14px; padding:8px 12px; border:1px solid rgba(0,255,136,0.3); border-radius:14px; box-shadow:0 0 12px rgba(0,255,136,0.15) inset; background:rgba(0,0,0,0.35); backdrop-filter: blur(4px); flex-wrap: wrap; }
     .btn { cursor:pointer; padding:10px 14px; border-radius:14px; border:1px solid rgba(0,255,136,0.5); background:linear-gradient(180deg,#09140e,#0e1f17); color:#eaffef; box-shadow:0 0 12px rgba(0,255,136,0.25); font-weight:700; }
     .btn:active { transform:scale(0.98); }
     canvas { border-radius:18px; border:1px solid rgba(0,255,136,0.4); box-shadow:0 0 18px rgba(0,255,136,0.35), 0 0 50px rgba(0,255,136,0.15) inset; background: radial-gradient(1200px 700px at 50% 0%, rgba(0,255,136,0.08), transparent), linear-gradient(180deg,#07110d,#050806); touch-action: manipulation; }
     .hint { font-size:12px; color:#b7ffda; opacity:0.9; text-align:center; }
+    /* Hidden admin panel */
+    .admin-panel { display:none; margin-top:10px; background:rgba(0,0,0,0.4); padding:10px; border-radius:10px; border:1px solid rgba(0,255,136,0.4); }
+    .admin-panel input { width:80px; padding:6px; background:#0e1f17; border:1px solid rgba(0,255,136,0.5); color:#eaffef; border-radius:6px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="title">14 <span>August</span> Runner — 🇵🇰</div>
+    <div class="title" id="secretTitle">14 <span>August</span> Runner — 🇵🇰</div>
     <div class="hud">
       <div>Score: <b id="score">0</b></div>
+      <div>Money: Rs <b id="money">0</b></div>
       <div>Best: <b id="best">0</b></div>
       <div>Level: <b id="level">1</b></div>
       <button id="startBtn" class="btn">Start / Restart</button>
     </div>
     <canvas id="game" width="920" height="420"></canvas>
-    <div class="hint">PC: Press <b>Space/↑/W</b> to jump • Mobile: <b>Tap</b> anywhere.<br/>Every <b>7 score</b> the game speeds up automatically.</div>
+    <div class="hint">
+      PC: <b>Space/↑/W</b> to jump • Mobile: <b>Tap</b> anywhere.<br/>
+      Entry fee: <b>Rs 5</b> per start • Every <b>20 score</b> → Rs +1 & score resets • Every <b>7 score</b> → Level up.
+    </div>
+
+    <!-- STEALTH admin panel (only after secret unlock + password) -->
+    <div class="admin-panel" id="adminPanel">
+      <p><b>Admin Panel</b> — Balance Control</p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn" id="addMoney">+ Add Rs</button>
+        <input type="number" id="amount" value="5" min="1">
+        <button class="btn" id="removeMoney">- Remove Rs</button>
+        <button class="btn" id="hideAdmin">Hide</button>
+      </div>
+    </div>
   </div>
 
 <script>
 (() => {
-  const canvas = document.getElementById('game');
-  const c = canvas.getContext('2d');
-  const scoreEl = document.getElementById('score');
-  const bestEl = document.getElementById('best');
-  const levelEl = document.getElementById('level');
-  const startBtn = document.getElementById('startBtn');
+  // ====== CONFIG ======
+  const ENTRY_FEE = 5;
+  const ADMIN_PASSWORD = "admin123"; // <-- CHANGE THIS!
 
-  // Responsive canvas (keeps aspect)
+  // Obfuscated-ish localStorage keys (not real security)
+  const LS_BEST   = "pk14_b";
+  const LS_MONEY  = "pk14_m";
+
+  // ====== DOM ======
+  const canvas   = document.getElementById('game');
+  const c        = canvas.getContext('2d');
+  const scoreEl  = document.getElementById('score');
+  const moneyEl  = document.getElementById('money');
+  const bestEl   = document.getElementById('best');
+  const levelEl  = document.getElementById('level');
+  const startBtn = document.getElementById('startBtn');
+  const adminUI  = document.getElementById('adminPanel');
+  const titleEl  = document.getElementById('secretTitle');
+
+  // ====== Responsive canvas ======
   function fitCanvas() {
     const maxW = Math.min(window.innerWidth - 20, 920);
     const scale = maxW / canvas.width;
@@ -49,35 +78,39 @@
   window.addEventListener('resize', fitCanvas);
   fitCanvas();
 
-  // Game constants
-  const GROUND_Y = canvas.height - 60; // ground baseline
+  // ====== Game constants ======
+  const GROUND_Y = canvas.height - 60;
   const GRAVITY = 0.7;
   const JUMP_VELOCITY = -13.5;
 
-  // State
+  // ====== State ======
   let running = false;
   let score = 0;
-  let best = Number(localStorage.getItem('pk14_best') || 0);
+  let best  = Number(localStorage.getItem(LS_BEST)  || 0);
+  let money = Number(localStorage.getItem(LS_MONEY) || 0);
   let level = 1;
-  let speed = 6;            // obstacle base speed
-  let spawnInterval = 1200; // ms
+  let speed = 6;
+  let spawnInterval = 1200;
   let lastSpawn = 0;
   let lastTime = 0;
 
-  bestEl.textContent = best;
+  bestEl.textContent  = best;
+  moneyEl.textContent = money;
 
-  const player = {
-    x: 120,
-    y: GROUND_Y,
-    r: 18,
-    vy: 0,
-    grounded: true,
-  };
-
-  /** Simple obstacle structure */
+  const player = { x:120, y:GROUND_Y, r:18, vy:0, grounded:true };
   const obstacles = [];
 
+  // ====== Core ======
   function resetGame() {
+    if (money < ENTRY_FEE) {
+      alert("Not enough balance. Entry fee is Rs " + ENTRY_FEE);
+      return;
+    }
+    // deduct entry fee
+    money -= ENTRY_FEE;
+    localStorage.setItem(LS_MONEY, money);
+    moneyEl.textContent = money;
+
     running = true;
     score = 0; level = 1; speed = 6; spawnInterval = 1200;
     player.y = GROUND_Y; player.vy = 0; player.grounded = true;
@@ -93,23 +126,24 @@
     }
   }
 
-  // Controls
   document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' || e.code === 'ArrowUp' || e.key.toLowerCase() === 'w') {
+    const key = e.key.toLowerCase();
+    if (e.code === 'Space' || e.code === 'ArrowUp' || key === 'w') {
       e.preventDefault();
       jump();
     }
+    // Feed key to Konami detector
+    konamiFeed(e);
   }, { passive:false });
+
   canvas.addEventListener('pointerdown', jump);
   startBtn.addEventListener('click', resetGame);
 
-  // Difficulty: every 7 score → +level, increase speed and spawn faster
   function handleDifficulty() {
     const newLevel = Math.floor(score / 7) + 1;
     if (newLevel !== level) {
       level = newLevel;
-      // Increase speed with a gentle ramp, and shorten spawn interval but keep a floor
-      speed = 6 + (level - 1) * 0.9; // linear-ish ramp
+      speed = 6 + (level - 1) * 0.9;
       spawnInterval = Math.max(450, 1200 - (level - 1) * 70);
       levelEl.textContent = level;
     }
@@ -127,7 +161,7 @@
   }
 
   function update(dt, now) {
-    // Player physics
+    // Physics
     player.vy += GRAVITY;
     player.y += player.vy;
     if (player.y >= GROUND_Y) {
@@ -136,25 +170,30 @@
       player.grounded = true;
     }
 
-    // Obstacles
+    // Obstacles + scoring
     for (let i = obstacles.length - 1; i >= 0; i--) {
       const o = obstacles[i];
       o.x -= speed;
-      // Score when passed
+
       if (!o.passed && o.x + o.w < player.x - player.r) {
         o.passed = true;
         score++;
+        if (score >= 20) {
+          money++;
+          localStorage.setItem(LS_MONEY, money);
+          moneyEl.textContent = money;
+          score = 0; // reset score after reward
+        }
         scoreEl.textContent = score;
         handleDifficulty();
       }
-      // Remove off screen
       if (o.x + o.w < -50) obstacles.splice(i,1);
     }
 
-    // Spawn logic
+    // Spawn
     if (now - lastSpawn >= spawnInterval) spawnObstacle(now);
 
-    // Collisions (circle vs. rect)
+    // Collision
     for (const o of obstacles) {
       const nearestX = Math.max(o.x, Math.min(player.x, o.x + o.w));
       const nearestY = Math.max(o.y, Math.min(player.y, o.y + o.h));
@@ -168,10 +207,7 @@
   }
 
   function drawBackground(t) {
-    // Subtle moving stars + ground line + Independence sparkles
     c.clearRect(0,0,canvas.width,canvas.height);
-
-    // Stars
     const starCount = 80;
     for (let i=0;i<starCount;i++) {
       const x = (i * 1234.567 + (t*0.02)) % canvas.width;
@@ -181,35 +217,27 @@
       c.fillRect(x, y, 2, 2);
     }
     c.globalAlpha = 1;
-
-    // Ground
     c.strokeStyle = 'rgba(0,255,136,0.6)';
     c.lineWidth = 2;
     c.beginPath();
     c.moveTo(0, GROUND_Y + player.r + 10);
     c.lineTo(canvas.width, GROUND_Y + player.r + 10);
     c.stroke();
-
-    // Slogan
     c.font = 'bold 16px system-ui, Arial';
     c.fillStyle = 'rgba(183,255,218,0.9)';
     c.fillText('14 August • Azadi Mubarak!', 16, 28);
   }
 
   function drawPlayer() {
-    // Player: glowing white circle with green crescent & star
-    // Glow
     c.shadowColor = '#00ff88';
     c.shadowBlur = 12;
     c.beginPath();
     c.fillStyle = '#ffffff';
     c.arc(player.x, player.y, player.r, 0, Math.PI*2);
     c.fill();
-
-    // Crescent (two circles trick)
     c.shadowBlur = 0;
     const cr = player.r * 0.6;
-    c.fillStyle = '#00a65a'; // Pakistani green
+    c.fillStyle = '#00a65a';
     c.beginPath();
     c.arc(player.x, player.y, cr, 0, Math.PI*2);
     c.fill();
@@ -218,8 +246,6 @@
     c.arc(player.x + cr*0.35, player.y, cr*0.75, 0, Math.PI*2);
     c.fill();
     c.globalCompositeOperation = 'source-over';
-
-    // Star (simple 5-point)
     drawStar(player.x + cr*0.9, player.y - cr*0.3, cr*0.35, 5);
   }
 
@@ -247,7 +273,6 @@
 
   function drawObstacles() {
     for (const o of obstacles) {
-      // Neon boxes (as hurdles)
       c.fillStyle = '#0c1e17';
       c.fillRect(o.x, o.y, o.w, o.h);
       c.strokeStyle = 'rgba(0,255,136,0.8)';
@@ -265,7 +290,8 @@
     c.fillText('Game Over', canvas.width/2, canvas.height/2 - 20);
     c.font = '16px system-ui, Arial';
     c.fillText('Score: ' + score + '  •  Best: ' + best, canvas.width/2, canvas.height/2 + 10);
-    c.fillText('Press Start to try again', canvas.width/2, canvas.height/2 + 40);
+    c.fillText('Money: Rs ' + money, canvas.width/2, canvas.height/2 + 30);
+    c.fillText('Press Start to try again', canvas.width/2, canvas.height/2 + 60);
     c.textAlign = 'left';
   }
 
@@ -273,7 +299,7 @@
     running = false;
     if (score > best) {
       best = score;
-      localStorage.setItem('pk14_best', String(best));
+      localStorage.setItem(LS_BEST, String(best));
       bestEl.textContent = best;
     }
   }
@@ -287,7 +313,6 @@
       drawGameOver();
       return;
     }
-
     if (!lastTime) lastTime = now;
     const dt = Math.min(32, now - lastTime);
     lastTime = now;
@@ -298,7 +323,62 @@
     drawPlayer();
   }
 
-  // Initialize with idle screen
+  // ====== Admin unlock (stealth) ======
+  // 1) Konami Code
+  const konami = ["arrowup","arrowup","arrowdown","arrowdown","arrowleft","arrowright","arrowleft","arrowright","b","a"];
+  let buffer = [];
+  function konamiFeed(e) {
+    buffer.push(e.key.toLowerCase());
+    if (buffer.length > konami.length) buffer.shift();
+    if (konami.every((k, i) => buffer[i] === k)) {
+      tryAdminUnlock();
+      buffer = [];
+    }
+  }
+
+  // 2) Long-press on title
+  let pressTimer = null;
+  function startPress() {
+    pressTimer = setTimeout(() => tryAdminUnlock(), 1800); // ~1.8s hold
+  }
+  function cancelPress() {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+  titleEl.addEventListener('mousedown', startPress);
+  titleEl.addEventListener('touchstart', startPress);
+  titleEl.addEventListener('mouseup', cancelPress);
+  titleEl.addEventListener('mouseleave', cancelPress);
+  titleEl.addEventListener('touchend', cancelPress);
+  titleEl.addEventListener('touchcancel', cancelPress);
+
+  function tryAdminUnlock() {
+    const pass = prompt("Enter admin password:");
+    if (pass === ADMIN_PASSWORD) {
+      adminUI.style.display = "block";
+    } else if (pass !== null) {
+      alert("Wrong password!");
+    }
+  }
+
+  // Admin actions
+  document.getElementById("addMoney").onclick = () => {
+    const amt = parseInt(document.getElementById("amount").value) || 0;
+    money += Math.max(0, amt);
+    localStorage.setItem(LS_MONEY, money);
+    moneyEl.textContent = money;
+  };
+  document.getElementById("removeMoney").onclick = () => {
+    const amt = parseInt(document.getElementById("amount").value) || 0;
+    money = Math.max(0, money - Math.max(0, amt));
+    localStorage.setItem(LS_MONEY, money);
+    moneyEl.textContent = money;
+  };
+  document.getElementById("hideAdmin").onclick = () => {
+    adminUI.style.display = "none";
+  };
+
+  // ====== Boot ======
   drawBackground(0);
   drawPlayer();
   requestAnimationFrame(loop);
